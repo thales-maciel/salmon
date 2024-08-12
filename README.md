@@ -6,6 +6,7 @@ Rules:
 - versions start at 0
 - version gaps are not allowed
 - each migration should increment the last version by one
+- each migration runs in a transaction
 - enforced naming convention: "V{version number}__{description}.sql"
 
 ## Installation
