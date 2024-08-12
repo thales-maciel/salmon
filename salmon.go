@@ -11,20 +11,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Opts struct {
-	RetryCount int // Number of retries when acquiring migration lock
-	RetryDelay time.Duration // Delay between retries
 	TableName string // Name of the table to store applied migrations
 	Verbose bool // Enable verbose logging
 }
 
 func defaultOpts() *Opts {
 	return &Opts{
-		RetryCount: 5,
-		RetryDelay: time.Second,
 		TableName: "salmon_schema_history",
 	}
 }
@@ -56,28 +51,6 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		return err
 	}
 
-	tx, err = db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	query := fmt.Sprintf(`insert into %s (version, description, checksum) values (-1, 'initial migration', '');`, opts.TableName)
-	for i := 0; i < opts.RetryCount; i++ {
-		_, err := tx.ExecContext(ctx, query)
-		if err == nil {
-			break
-		}
-		if strings.Contains(err.Error(), "SQLSTATE 40001") {
-			time.Sleep(opts.RetryDelay)
-			continue
-		}
-		tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	// if we're here, the lock was acquired
 	files, err := os.ReadDir(migrationDir)
 	if err != nil {
 		return err
@@ -85,7 +58,7 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 
 	appliedMigrations, err := getAppliedMigrations(db, opts.TableName)
 	if err != nil {
-		return releaseLock(ctx, db, opts.TableName, err)
+		return err
 	}
 
 	var migrationsToApply []Migration
@@ -96,17 +69,17 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 
 		version, description, err := parseMigrationFile(file.Name())
 		if err != nil {
-			return releaseLock(ctx, db, opts.TableName, err)
+			return err
 		}
 
 		if version != int64(i) {
 			err := fmt.Errorf("incorrect version number: %s", file.Name())
-			return releaseLock(ctx, db, opts.TableName, err)
+			return err
 		}
 
 		content, err := os.ReadFile(filepath.Join(migrationDir, file.Name()))
 		if err != nil {
-			return releaseLock(ctx, db, opts.TableName, err)
+			return err
 		}
 		checksum := calculateChecksum(content)
 
@@ -114,7 +87,7 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 			migration := appliedMigrations[i]
 			if migration.Checksum != checksum {
 				err := fmt.Errorf("checksum does not match expected value: %s", file.Name())
-				return releaseLock(ctx, db, opts.TableName, err)
+				return err
 			}
 			continue
 		}
@@ -131,8 +104,8 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 	}
 
 	for _, migration := range migrationsToApply {
-		if err := applyMigration(ctx, db, migration); err != nil {
-			return releaseLock(ctx, db, opts.TableName, err)
+		if err := applyMigration(ctx, db, migration, opts.TableName); err != nil {
+			return err
 		}
 	}
 
@@ -150,10 +123,21 @@ func releaseLock(ctx context.Context, db *sql.DB, tableName string, err error) e
 	return fmt.Errorf("ATTENTION: could not release lock! please run `delete from %s where version=-1;` and try again.\noriginal err: %s", tableName, lockErr)
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, migration Migration) error {
+func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablename string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
+	}
+
+	var exists bool
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`select exists(select 1 from %s where version = $1)`, tablename), migration.Version).Scan(&exists)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if exists {
+		return nil
 	}
 
 	if _, err = tx.ExecContext(ctx, `
