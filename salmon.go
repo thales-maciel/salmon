@@ -5,8 +5,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -16,11 +20,15 @@ import (
 type Opts struct {
 	TableName string // Name of the table to store applied migrations
 	Verbose bool // Enable verbose logging
+	Dir string // Directory containing migration files
+	FS fs.FS // Filesystem for reading migration files
 }
 
 func defaultOpts() *Opts {
 	return &Opts{
 		TableName: "salmon_schema_history",
+		FS: osFS{},
+		Dir: "migrations",
 	}
 }
 
@@ -51,33 +59,42 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		return err
 	}
 
-	files, err := os.ReadDir(migrationDir)
+	appliedMigrations, err := getAppliedMigrations(db, opts.TableName)
 	if err != nil {
 		return err
 	}
 
-	appliedMigrations, err := getAppliedMigrations(db, opts.TableName)
+	if _, err := fs.Stat(opts.FS, opts.Dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s directory does not exist", opts.Dir)
+		}
+		return err
+	}
+
+	files, err := fs.Glob(opts.FS, path.Join(opts.Dir, "*.sql"))
 	if err != nil {
 		return err
 	}
 
 	var migrationsToApply []Migration
 	for i, file := range files {
-		if file.IsDir() || filepath.Ext(file.Name()) != ".sql" {
-			continue
-		}
-
-		version, description, err := parseMigrationFile(file.Name())
+		version, description, err := parseMigrationFile(file)
 		if err != nil {
 			return err
 		}
 
 		if version != int64(i) {
-			err := fmt.Errorf("incorrect version number: %s", file.Name())
+			err := fmt.Errorf("incorrect version number: %s", filepath.Base(file))
 			return err
 		}
 
-		content, err := os.ReadFile(filepath.Join(migrationDir, file.Name()))
+		f, err := opts.FS.Open(file)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		content, err := io.ReadAll(f)
 		if err != nil {
 			return err
 		}
@@ -86,7 +103,7 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		if i < len(appliedMigrations) {
 			migration := appliedMigrations[i]
 			if migration.Checksum != checksum {
-				err := fmt.Errorf("checksum does not match expected value: %s", file.Name())
+				err := fmt.Errorf("checksum does not match expected value: %s", file)
 				return err
 			}
 			continue
@@ -166,12 +183,12 @@ func parseMigrationFile(filename string) (int64, string, error) {
 
 	parts := strings.SplitN(basename, "__", 2) // split version and description
 	if len(parts) != 2 {
-		return 0, "", fmt.Errorf("invalid filename format: %s", filename)
+		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
 	}
 
 	version, err := strconv.Atoi(parts[0][1:]) // skip leading "V"
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid filename format: %s", filename)
+		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
 	}
 
 	description := parts[1]
@@ -219,3 +236,17 @@ func clearStatement(s string) string {
 	s = matchSQLComments.ReplaceAllString(s, ``)
 	return matchEmptyEOL.ReplaceAllString(s, ``)
 }
+
+
+// osFS wraps functions working with os filesystem to implement fs.FS interfaces.
+type osFS struct{}
+
+func (osFS) Open(name string) (fs.File, error) { return os.Open(filepath.FromSlash(name)) }
+
+func (osFS) ReadDir(name string) ([]fs.DirEntry, error) { return os.ReadDir(filepath.FromSlash(name)) }
+
+func (osFS) Stat(name string) (fs.FileInfo, error) { return os.Stat(filepath.FromSlash(name)) }
+
+func (osFS) ReadFile(name string) ([]byte, error) { return os.ReadFile(filepath.FromSlash(name)) }
+
+func (osFS) Glob(pattern string) ([]string, error) { return filepath.Glob(filepath.FromSlash(pattern)) }

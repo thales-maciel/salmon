@@ -100,10 +100,11 @@ func TestMigrate(t *testing.T) {
 			defer os.RemoveAll(dir)
 
 			opts := defaultOpts()
+			opts.Dir = dir
 			err := Migrate(ctx, db, dir, opts)
 
 			if tt.expectedError != "" {
-				assert.Error(t, err)
+				require.Error(t, err)
 				assert.Equal(t, tt.expectedError, err.Error())
 			} else {
 				assert.NoError(t, err, fmt.Sprintf("expected no error, got: %v", err))
