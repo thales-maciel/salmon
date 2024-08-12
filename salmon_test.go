@@ -99,7 +99,8 @@ func TestMigrate(t *testing.T) {
 			dir := setupMigrationsDir(t, tt.files)
 			defer os.RemoveAll(dir)
 
-			err := Migrate(ctx, db, dir)
+			opts := defaultOpts()
+			err := Migrate(ctx, db, dir, opts)
 
 			if tt.expectedError != "" {
 				assert.Error(t, err)
@@ -109,7 +110,7 @@ func TestMigrate(t *testing.T) {
 			}
 			
 			if tt.expectedVersions != nil {
-				rows, err := db.Query("select version from salmon_schema_history order by version")
+				rows, err := db.Query(fmt.Sprintf("select version from %s order by version", opts.TableName))
 				require.NoError(t, err)
 				defer rows.Close()
 

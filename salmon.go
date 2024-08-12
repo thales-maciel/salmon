@@ -8,9 +8,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
+
+type Opts struct {
+	RetryCount int // Number of retries when acquiring migration lock
+	RetryDelay time.Duration // Delay between retries
+	TableName string // Name of the table to store applied migrations
+	Verbose bool // Enable verbose logging
+}
+
+func defaultOpts() *Opts {
+	return &Opts{
+		RetryCount: 5,
+		RetryDelay: time.Second,
+		TableName: "salmon_schema_history",
+	}
+}
 
 type Migration struct {
 	Version     int64
@@ -19,13 +36,17 @@ type Migration struct {
 	Content     string
 }
 
-func Migrate(ctx context.Context, db *sql.DB, migrationDir string) error {
+func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) error {
+	if opts == nil {
+		opts = defaultOpts()
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	if _, err = tx.ExecContext(ctx, schema); err != nil {
+	if _, err = tx.ExecContext(ctx, schema(opts.TableName)); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -35,15 +56,36 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string) error {
 		return err
 	}
 
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	query := fmt.Sprintf(`insert into %s (version, description, checksum) values (-1, 'initial migration', '');`, opts.TableName)
+	for i := 0; i < opts.RetryCount; i++ {
+		_, err := tx.ExecContext(ctx, query)
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "SQLSTATE 40001") {
+			time.Sleep(opts.RetryDelay)
+			continue
+		}
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 
+	// if we're here, the lock was acquired
 	files, err := os.ReadDir(migrationDir)
 	if err != nil {
 		return err
 	}
 
-	appliedMigrations, err := getAppliedMigrations(db)
+	appliedMigrations, err := getAppliedMigrations(db, opts.TableName)
 	if err != nil {
-		return fmt.Errorf("failed to get applied migrations: %v", err)
+		return releaseLock(ctx, db, opts.TableName, err)
 	}
 
 	var migrationsToApply []Migration
@@ -54,23 +96,25 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string) error {
 
 		version, description, err := parseMigrationFile(file.Name())
 		if err != nil {
-			return err
+			return releaseLock(ctx, db, opts.TableName, err)
 		}
 
 		if version != int64(i) {
-			return fmt.Errorf("incorrect version number: %s", file.Name())
+			err := fmt.Errorf("incorrect version number: %s", file.Name())
+			return releaseLock(ctx, db, opts.TableName, err)
 		}
 
 		content, err := os.ReadFile(filepath.Join(migrationDir, file.Name()))
 		if err != nil {
-			return err
+			return releaseLock(ctx, db, opts.TableName, err)
 		}
 		checksum := calculateChecksum(content)
 
 		if i < len(appliedMigrations) {
 			migration := appliedMigrations[i]
 			if migration.Checksum != checksum {
-				return fmt.Errorf("checksum does not match expected value: %s", file.Name())
+				err := fmt.Errorf("checksum does not match expected value: %s", file.Name())
+				return releaseLock(ctx, db, opts.TableName, err)
 			}
 			continue
 		}
@@ -88,11 +132,22 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string) error {
 
 	for _, migration := range migrationsToApply {
 		if err := applyMigration(ctx, db, migration); err != nil {
-			return err
+			return releaseLock(ctx, db, opts.TableName, err)
 		}
 	}
 
-	return nil
+	return releaseLock(ctx, db, opts.TableName, nil)
+}
+
+func releaseLock(ctx context.Context, db *sql.DB, tableName string, err error) error {
+	_, lockErr := db.ExecContext(ctx, fmt.Sprintf(`delete from %s where version = -1;`, tableName))
+	if lockErr == nil {
+		return err
+	}
+	if err != nil {
+		return fmt.Errorf("ATTENTION: could not release lock! please run `delete from %s where version=-1;` and try again.\noriginal err: %s\nfrom: %s", tableName, lockErr, err)
+	}
+	return fmt.Errorf("ATTENTION: could not release lock! please run `delete from %s where version=-1;` and try again.\noriginal err: %s", tableName, lockErr)
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration Migration) error {
@@ -102,8 +157,8 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration) error 
 	}
 
 	if _, err = tx.ExecContext(ctx, `
-        INSERT INTO salmon_schema_history (version, description, checksum)
-        VALUES ($1, $2, $3)`,
+        insert into salmon_schema_history (version, description, checksum)
+        values ($1, $2, $3)`,
 		migration.Version, migration.Description, migration.Checksum); err != nil {
 		tx.Rollback()
 		return err
@@ -139,10 +194,10 @@ func parseMigrationFile(filename string) (int64, string, error) {
 	return int64(version), description, nil
 }
 
-func getAppliedMigrations(db *sql.DB) ([]Migration, error) {
+func getAppliedMigrations(db *sql.DB, tableName string) ([]Migration, error) {
 	migrations := []Migration{}
 
-	rows, err := db.Query("SELECT version, description, checksum FROM salmon_schema_history order by version")
+	rows, err := db.Query(fmt.Sprintf("SELECT version, description, checksum FROM %s where version > -1 order by version", tableName))
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +214,24 @@ func getAppliedMigrations(db *sql.DB) ([]Migration, error) {
 	return migrations, nil
 }
 
-const schema = `
-    create table if not exists salmon_schema_history (
-        id integer primary key autoincrement,
-        version integer not null,
-        description text not null,
-        checksum text not null,
-        applied_at timestamp default current_timestamp not null
-    );
-    create table if not exists salmon_lock (
-        id integer primary key,
-        locked_at timestamp default current_timestamp not null
-    );
-    `
+func schema(tableName string) string {
+	return fmt.Sprintf(`
+		create table if not exists %s (
+		id integer primary key autoincrement,
+		version integer not null,
+		description text not null,
+		checksum text not null,
+		applied_at timestamp default current_timestamp not null
+		);
+		`, tableName)
+}
+
+var (
+	matchSQLComments = regexp.MustCompile(`(?m)^--.*$[\r\n]*`)
+	matchEmptyEOL    = regexp.MustCompile(`(?m)^$[\r\n]*`) // TODO: Duplicate
+)
+
+func clearStatement(s string) string {
+	s = matchSQLComments.ReplaceAllString(s, ``)
+	return matchEmptyEOL.ReplaceAllString(s, ``)
+}
