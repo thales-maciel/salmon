@@ -120,7 +120,7 @@ func TestMigrate(t *testing.T) {
 
 			opts := defaultOpts()
 			opts.Dir = dir
-			err := Migrate(ctx, db, dir, opts)
+			err := Migrate(ctx, db, opts)
 
 			if tt.expectedError != "" {
 				require.Error(t, err)

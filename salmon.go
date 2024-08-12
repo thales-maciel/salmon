@@ -40,7 +40,7 @@ type Migration struct {
 	Content     string
 }
 
-func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) error {
+func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 	if opts == nil {
 		opts = defaultOpts()
 	}
@@ -86,13 +86,7 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		}
 		versions = append(versions, version)
 
-		f, err := opts.FS.Open(file)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		content, err := io.ReadAll(f)
+		content, err := getFileContent(opts.FS, file)
 		if err != nil {
 			return err
 		}
@@ -136,6 +130,16 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 	}
 
 	return nil
+}
+
+func getFileContent(fs fs.FS, file string) ([]byte, error) {
+	f, err := fs.Open(file)
+	if err!= nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return io.ReadAll(f)
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablename string) error {
