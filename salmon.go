@@ -44,6 +44,9 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 	if opts == nil {
 		opts = defaultOpts()
 	}
+	if opts.TableName == "" {
+		opts.TableName = "salmon_schema_history"
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -82,7 +85,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 	for _, file := range files {
 		version, description, err := parseMigrationFile(file)
 		if err != nil {
-			return fmt.Errorf("failed to parse migration file: %s: %w", file, err)
+			return err
 		}
 		versions = append(versions, version)
 
@@ -124,7 +127,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 
 	for _, migration := range migrationsToApply {
 		if err := applyMigration(ctx, db, migration, opts.TableName); err != nil {
-			return fmt.Errorf("failed to apply migration: %s: %w", migration.Description, err)
+			return err
 		}
 	}
 
@@ -144,27 +147,27 @@ func getFileContent(fs fs.FS, file string) ([]byte, error) {
 func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablename string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	var exists bool
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`select exists(select 1 from %s where version = $1)`, tablename), migration.Version).Scan(&exists)
 	if err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to check if migration exists: %w", err)
 	}
 
 	if exists {
 		return nil
 	}
 
-	if _, err = tx.ExecContext(ctx, `
-        insert into salmon_schema_history (version, description, checksum)
-        values ($1, $2, $3)`,
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`
+        insert into %s (version, description, checksum)
+        values ($1, $2, $3);`, tablename),
 		migration.Version, migration.Description, migration.Checksum,
 	); err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to insert migration into history table: %w", err)
 	}
 
 	if _, err = tx.ExecContext(ctx, migration.Content); err != nil {
