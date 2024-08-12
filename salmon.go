@@ -12,7 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,6 +30,8 @@ func defaultOpts() *Opts {
 		Dir: "migrations",
 	}
 }
+
+type Migrations map[int64]Migration
 
 type Migration struct {
 	Version     int64
@@ -76,16 +78,13 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 	}
 
 	var migrationsToApply []Migration
-	for i, file := range files {
+	var versions []int64
+	for _, file := range files {
 		version, description, err := parseMigrationFile(file)
 		if err != nil {
 			return err
 		}
-
-		if version != int64(i) {
-			err := fmt.Errorf("incorrect version number: %s", filepath.Base(file))
-			return err
-		}
+		versions = append(versions, version)
 
 		f, err := opts.FS.Open(file)
 		if err != nil {
@@ -99,8 +98,8 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		}
 		checksum := calculateChecksum(content)
 
-		if i < len(appliedMigrations) {
-			migration := appliedMigrations[i]
+		if int(version) < len(appliedMigrations) {
+			migration := appliedMigrations[version]
 			if migration.Checksum != checksum {
 				err := fmt.Errorf("checksum does not match expected value: %s", file)
 				return err
@@ -113,6 +112,14 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 			Checksum:    checksum,
 			Content:     string(content),
 		})
+	}
+
+	// sort versions slice and guarantee that there are no duplicate versions or gaps
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	for i, version := range versions {
+		if i != int(version) {
+			return fmt.Errorf("invalid version: expected %d, got %d", i, version)
+		}
 	}
 
 	if len(migrationsToApply) == 0 {
@@ -159,7 +166,8 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablen
 	if _, err = tx.ExecContext(ctx, `
         insert into salmon_schema_history (version, description, checksum)
         values ($1, $2, $3)`,
-		migration.Version, migration.Description, migration.Checksum); err != nil {
+		migration.Version, migration.Description, migration.Checksum,
+	); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -194,10 +202,10 @@ func parseMigrationFile(filename string) (int64, string, error) {
 	return int64(version), description, nil
 }
 
-func getAppliedMigrations(db *sql.DB, tableName string) ([]Migration, error) {
-	migrations := []Migration{}
+func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
+	migrations := make(Migrations)
 
-	rows, err := db.Query(fmt.Sprintf("SELECT version, description, checksum FROM %s where version > -1 order by version", tableName))
+	rows, err := db.Query(fmt.Sprintf("select version, description, checksum FROM %s where version > -1 order by version", tableName))
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +216,7 @@ func getAppliedMigrations(db *sql.DB, tableName string) ([]Migration, error) {
 		if err := rows.Scan(&migration.Version, &migration.Description, &migration.Checksum); err != nil {
 			return nil, err
 		}
-		migrations = append(migrations, migration)
+		migrations[migration.Version] = migration
 	}
 
 	return migrations, nil

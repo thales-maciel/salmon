@@ -67,7 +67,7 @@ func TestMigrate(t *testing.T) {
 		{
 			name: "out of order migrations",
 			files: outOfOrder,
-			expectedError: "incorrect version number: V3__add_age_column.sql",
+			expectedError: "invalid version: expected 2, got 3",
 			expectedVersions: nil,
 		},
 		{
