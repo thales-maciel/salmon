@@ -19,7 +19,6 @@ import (
 
 type Opts struct {
 	TableName string // Name of the table to store applied migrations
-	Verbose bool // Enable verbose logging
 	Dir string // Directory containing migration files
 	FS fs.FS // Filesystem for reading migration files
 }
@@ -226,17 +225,6 @@ func schema(tableName string) string {
 		);
 		`, tableName)
 }
-
-var (
-	matchSQLComments = regexp.MustCompile(`(?m)^--.*$[\r\n]*`)
-	matchEmptyEOL    = regexp.MustCompile(`(?m)^$[\r\n]*`) // TODO: Duplicate
-)
-
-func clearStatement(s string) string {
-	s = matchSQLComments.ReplaceAllString(s, ``)
-	return matchEmptyEOL.ReplaceAllString(s, ``)
-}
-
 
 // osFS wraps functions working with os filesystem to implement fs.FS interfaces.
 type osFS struct{}
