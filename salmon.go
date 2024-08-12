@@ -52,29 +52,29 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 
 	if _, err = tx.ExecContext(ctx, schema(opts.TableName)); err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to create schema table: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	appliedMigrations, err := getAppliedMigrations(db, opts.TableName)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to retrieve applied migrations: %w", err)
 	}
 
 	if _, err := fs.Stat(opts.FS, opts.Dir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("directory does not exist: %s", opts.Dir)
 		}
-		return err
+		return fmt.Errorf("failed to read directory: %w", err)
 	}
 
 	files, err := fs.Glob(opts.FS, path.Join(opts.Dir, "*.sql"))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read migration files: %w", err)
 	}
 
 	var migrationsToApply []Migration
@@ -82,21 +82,20 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 	for _, file := range files {
 		version, description, err := parseMigrationFile(file)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to parse migration file: %s: %w", file, err)
 		}
 		versions = append(versions, version)
 
 		content, err := getFileContent(opts.FS, file)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read migration file content: %s: %w", file, err)
 		}
 		checksum := calculateChecksum(content)
 
 		if int(version) < len(appliedMigrations) {
 			migration := appliedMigrations[version]
 			if migration.Checksum != checksum {
-				err := fmt.Errorf("checksum does not match expected value: %s", file)
-				return err
+				return fmt.Errorf("checksum does not match expected value: %s", file)
 			}
 			continue
 		}
@@ -125,7 +124,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 
 	for _, migration := range migrationsToApply {
 		if err := applyMigration(ctx, db, migration, opts.TableName); err != nil {
-			return err
+			return fmt.Errorf("failed to apply migration: %s: %w", migration.Description, err)
 		}
 	}
 
