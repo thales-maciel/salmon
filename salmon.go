@@ -67,7 +67,7 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 
 	if _, err := fs.Stat(opts.FS, opts.Dir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s directory does not exist", opts.Dir)
+			return fmt.Errorf("directory does not exist: %s", opts.Dir)
 		}
 		return err
 	}
@@ -114,7 +114,6 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		})
 	}
 
-	// sort versions slice and guarantee that there are no duplicate versions or gaps
 	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
 	for i, version := range versions {
 		if i != int(version) {
@@ -126,24 +125,17 @@ func Migrate(ctx context.Context, db *sql.DB, migrationDir string, opts *Opts) e
 		return nil
 	}
 
+	sort.Slice(migrationsToApply, func(i, j int) bool {
+		return migrationsToApply[i].Version < migrationsToApply[j].Version
+	})
+
 	for _, migration := range migrationsToApply {
 		if err := applyMigration(ctx, db, migration, opts.TableName); err != nil {
 			return err
 		}
 	}
 
-	return releaseLock(ctx, db, opts.TableName, nil)
-}
-
-func releaseLock(ctx context.Context, db *sql.DB, tableName string, err error) error {
-	_, lockErr := db.ExecContext(ctx, fmt.Sprintf(`delete from %s where version = -1;`, tableName))
-	if lockErr == nil {
-		return err
-	}
-	if err != nil {
-		return fmt.Errorf("ATTENTION: could not release lock! please run `delete from %s where version=-1;` and try again.\noriginal err: %s\nfrom: %s", tableName, lockErr, err)
-	}
-	return fmt.Errorf("ATTENTION: could not release lock! please run `delete from %s where version=-1;` and try again.\noriginal err: %s", tableName, lockErr)
+	return nil
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablename string) error {

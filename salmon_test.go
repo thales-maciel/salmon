@@ -34,6 +34,19 @@ var (
 		"V1__add_email_column.sql": "alter table users add email text not null;",
 		"V2__add_age_column.sql": "alter table users add age integer not null;",
 	}
+	validLong = MigrationFiles{
+		"V0__initial_schema.sql": "create table users (id integer primary key, name text not null);",
+		"V1__add_email_column.sql": "alter table users add email text not null;",
+		"V2__add_age_column.sql":  "alter table users add age integer not null;",
+		"V3__add_description_column.sql": "create table if not exists user (id);",
+		"V4__add_description_column.sql": "create table if not exists user (id);",
+		"V5__add_description_column.sql": "create table if not exists user (id);",
+		"V6__add_description_column.sql": "create table if not exists user (id);",
+		"V7__add_description_column.sql": "create table if not exists user (id);",
+		"V8__add_description_column.sql": "create table if not exists user (id);",
+		"V9__add_description_column.sql": "create table if not exists user (id);",
+		"V10__add_description_column.sql": "create table if not exists user (id);",
+	}
 )
 
 func setupDB(t *testing.T) *sql.DB {
@@ -87,6 +100,12 @@ func TestMigrate(t *testing.T) {
 			files: validMigrations,
 			expectedError: "",
 			expectedVersions: []int{0, 1, 2},
+		},
+		{
+			name: "valid with names not naturally ordered",
+			files: validLong,
+			expectedError: "",
+			expectedVersions: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 		},
 	}
 
