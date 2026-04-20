@@ -200,19 +200,26 @@ func calculateChecksum(content []byte) string {
 
 func parseMigrationFile(filename string) (int64, string, error) {
 	basename := filepath.Base(filename)
-
-	parts := strings.SplitN(basename, "__", 2) // split version and description
-	if len(parts) != 2 {
+	if !strings.HasPrefix(basename, "V") || !strings.HasSuffix(basename, ".sql") {
 		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
 	}
 
-	version, err := strconv.Atoi(parts[0][1:]) // skip leading "V"
+	name := strings.TrimSuffix(basename, ".sql")
+	parts := strings.SplitN(name, "__", 2) // split version and description
+	if len(parts) != 2 || len(parts[0]) < 2 || parts[1] == "" {
+		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
+	}
+
+	version, err := strconv.ParseInt(parts[0][1:], 10, 64) // skip leading "V"
 	if err != nil {
+		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
+	}
+	if version < 0 {
 		return 0, "", fmt.Errorf("invalid filename format: %s", basename)
 	}
 
 	description := parts[1]
-	return int64(version), description, nil
+	return version, description, nil
 }
 
 func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {

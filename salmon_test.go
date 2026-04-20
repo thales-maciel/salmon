@@ -25,6 +25,14 @@ var (
 		"V0__initial_schema.sql":     "create table users (id integer primary key, name text not null);",
 		"Vone__add_email_column.sql": "alter table users add email text not null;",
 	}
+	invalidNameMissingVersion = MigrationFiles{
+		"V0__initial_schema.sql": "create table users (id integer primary key, name text not null);",
+		"__add_email_column.sql": "alter table users add email text not null;",
+	}
+	invalidNameEmptyDescription = MigrationFiles{
+		"V0__initial_schema.sql": "create table users (id integer primary key, name text not null);",
+		"V1__.sql":               "alter table users add email text not null;",
+	}
 	invalidSql = MigrationFiles{
 		"V0__initial_schema.sql":   "create table users (id integer primary key, name text not null);",
 		"V1__add_email_column.sql": "alter table users add",
@@ -87,6 +95,18 @@ func TestMigrate(t *testing.T) {
 			name:             "invalid migration name",
 			files:            invalidName,
 			expectedError:    "invalid filename format: Vone__add_email_column.sql",
+			expectedVersions: nil,
+		},
+		{
+			name:             "invalid migration name missing version",
+			files:            invalidNameMissingVersion,
+			expectedError:    "invalid filename format: __add_email_column.sql",
+			expectedVersions: nil,
+		},
+		{
+			name:             "invalid migration name empty description",
+			files:            invalidNameEmptyDescription,
+			expectedError:    "invalid filename format: V1__.sql",
 			expectedVersions: nil,
 		},
 		{
