@@ -19,16 +19,36 @@ import (
 
 type Opts struct {
 	TableName string // Name of the table to store applied migrations
-	Dir string // Directory containing migration files
-	FS fs.FS // Filesystem for reading migration files
+	Dir       string // Directory containing migration files
+	FS        fs.FS  // Filesystem for reading migration files
 }
 
 func defaultOpts() *Opts {
 	return &Opts{
 		TableName: "salmon_schema_history",
-		FS: osFS{},
-		Dir: "migrations",
+		FS:        osFS{},
+		Dir:       "migrations",
 	}
+}
+
+func normalizeOpts(opts *Opts) *Opts {
+	defaults := defaultOpts()
+	if opts == nil {
+		return defaults
+	}
+
+	normalized := *opts
+	if normalized.TableName == "" {
+		normalized.TableName = defaults.TableName
+	}
+	if normalized.Dir == "" {
+		normalized.Dir = defaults.Dir
+	}
+	if normalized.FS == nil {
+		normalized.FS = defaults.FS
+	}
+
+	return &normalized
 }
 
 type Migrations map[int64]Migration
@@ -41,12 +61,7 @@ type Migration struct {
 }
 
 func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
-	if opts == nil {
-		opts = defaultOpts()
-	}
-	if opts.TableName == "" {
-		opts.TableName = "salmon_schema_history"
-	}
+	opts = normalizeOpts(opts)
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -136,7 +151,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 
 func getFileContent(fs fs.FS, file string) ([]byte, error) {
 	f, err := fs.Open(file)
-	if err!= nil {
+	if err != nil {
 		return nil, err
 	}
 	defer f.Close()

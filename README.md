@@ -1,6 +1,6 @@
 # Salmon
 
-`salmon` is an opinionated golang migration library for SQLite databases.
+`salmon` is an **opinionated** golang migration library for SQLite databases.
 
 Rules:
 - versions start at 0
@@ -19,20 +19,25 @@ go get github.com/thales-maciel/salmon
 package main
 
 import (
-    "context"
+	"context"
 	"database/sql"
 
-    "github.com/thales-maciel/salmon"
-    _ "github.com/mattn/go-sqlite3"
+	"github.com/thales-maciel/salmon"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
-    ctx := context.Background()
+	ctx := context.Background()
 	db, err := sql.Open("sqlite3", "db")
-    if err != nil { panic(err) }
-    err := salmon.Migrate(ctx, db, &salmon.Opts{
-        Dir: "migrations",
-    })
+	if err != nil {
+		panic(err)
+	}
+
+	if err := salmon.Migrate(ctx, db, &salmon.Opts{
+		Dir: "migrations",
+	}); err != nil {
+		panic(err)
+	}
 }
 ```
 
@@ -41,24 +46,30 @@ func main() {
 package main
 
 import (
-    "context"
+	"context"
 	"database/sql"
+	"embed"
 
-    "github.com/thales-maciel/salmon"
-    _ "github.com/mattn/go-sqlite3"
+	"github.com/thales-maciel/salmon"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed migrations/*.sql
 var embedMigrations embed.FS
 
 func main() {
-    ctx := context.Background()
+	ctx := context.Background()
 	db, err := sql.Open("sqlite3", "db")
-    if err != nil { panic(err) }
-    err := salmon.Migrate(ctx, db, &salmon.Opts{
-        Dir: "migrations",
-        FS: embedMigrations,
-    })
+	if err != nil {
+		panic(err)
+	}
+
+	if err := salmon.Migrate(ctx, db, &salmon.Opts{
+		Dir: "migrations",
+		FS:  embedMigrations,
+	}); err != nil {
+		panic(err)
+	}
 }
 ```
 
