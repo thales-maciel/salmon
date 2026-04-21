@@ -78,6 +78,19 @@ func setupMigrationsDir(t *testing.T, files MigrationFiles) string {
 	return dir
 }
 
+func seedAppliedMigration(t *testing.T, db *sql.DB, tableName string, filename string, content string) {
+	version, description, err := parseMigrationFile(filename)
+	require.NoError(t, err)
+
+	_, err = db.Exec(
+		fmt.Sprintf("insert into %s (version, description, checksum) values (?, ?, ?)", tableName),
+		version,
+		description,
+		calculateChecksum([]byte(content)),
+	)
+	require.NoError(t, err)
+}
+
 func TestMigrate(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -195,4 +208,25 @@ func TestMigrateWithPartialOptsUsesDefaults(t *testing.T) {
 	}
 
 	assert.Equal(t, []int{0, 1, 2}, versions)
+}
+
+func TestMigrateRejectsNonContiguousAppliedHistory(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	opts := defaultOpts()
+	_, err := db.Exec(schema(opts.TableName))
+	require.NoError(t, err)
+
+	seedAppliedMigration(t, db, opts.TableName, "V0__initial_schema.sql", validMigrations["V0__initial_schema.sql"])
+	seedAppliedMigration(t, db, opts.TableName, "V2__add_age_column.sql", validMigrations["V2__add_age_column.sql"])
+
+	dir := setupMigrationsDir(t, validMigrations)
+	defer os.RemoveAll(dir)
+	opts.Dir = dir
+
+	err = Migrate(ctx, db, opts)
+	require.Error(t, err)
+	assert.Equal(t, "failed to retrieve applied migrations: invalid applied migration history: expected version 1, got 2", err.Error())
 }

@@ -110,9 +110,8 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 		}
 		checksum := calculateChecksum(content)
 
-		if int(version) < len(appliedMigrations) {
-			migration := appliedMigrations[version]
-			if migration.Checksum != checksum {
+		if appliedMigration, ok := appliedMigrations[version]; ok {
+			if appliedMigration.Checksum != checksum {
 				return fmt.Errorf("checksum does not match expected value: %s", file)
 			}
 			continue
@@ -236,7 +235,17 @@ func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
 		if err := rows.Scan(&migration.Version, &migration.Description, &migration.Checksum); err != nil {
 			return nil, err
 		}
+
+		expectedVersion := int64(len(migrations))
+		if migration.Version != expectedVersion {
+			return nil, fmt.Errorf("invalid applied migration history: expected version %d, got %d", expectedVersion, migration.Version)
+		}
+
 		migrations[migration.Version] = migration
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return migrations, nil
