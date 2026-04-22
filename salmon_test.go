@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -89,6 +90,18 @@ func seedAppliedMigration(t *testing.T, db *sql.DB, tableName string, filename s
 		calculateChecksum([]byte(content)),
 	)
 	require.NoError(t, err)
+}
+
+func mustBuildMigration(t *testing.T, filename string, content string) Migration {
+	version, description, err := parseMigrationFile(filename)
+	require.NoError(t, err)
+
+	return Migration{
+		Version:     version,
+		Description: description,
+		Checksum:    calculateChecksum([]byte(content)),
+		Content:     content,
+	}
 }
 
 func TestMigrate(t *testing.T) {
@@ -229,4 +242,51 @@ func TestMigrateRejectsNonContiguousAppliedHistory(t *testing.T) {
 	err = Migrate(ctx, db, opts)
 	require.Error(t, err)
 	assert.Equal(t, "failed to retrieve applied migrations: invalid applied migration history: expected version 1, got 2", err.Error())
+}
+
+func TestSchemaEnforcesUniqueMigrationVersion(t *testing.T) {
+	db := setupDB(t)
+	defer db.Close()
+
+	opts := defaultOpts()
+	_, err := db.Exec(schema(opts.TableName))
+	require.NoError(t, err)
+
+	seedAppliedMigration(t, db, opts.TableName, "V0__initial_schema.sql", validMigrations["V0__initial_schema.sql"])
+
+	_, err = db.Exec(
+		fmt.Sprintf("insert into %s (version, description, checksum) values (?, ?, ?)", quoteIdentifier(opts.TableName)),
+		0,
+		"duplicate",
+		"duplicate",
+	)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "UNIQUE constraint failed")
+}
+
+func TestApplyMigrationDoesNotLeakTransactionWhenAlreadyApplied(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	opts := defaultOpts()
+	_, err := db.Exec(schema(opts.TableName))
+	require.NoError(t, err)
+
+	migration := mustBuildMigration(t, "V0__initial_schema.sql", validMigrations["V0__initial_schema.sql"])
+
+	err = applyMigration(ctx, db, migration, opts.TableName)
+	require.NoError(t, err)
+
+	err = applyMigration(ctx, db, migration, opts.TableName)
+	require.NoError(t, err)
+
+	queryCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	var count int
+	err = db.QueryRowContext(queryCtx, "select count(*) from salmon_schema_history").Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
 }

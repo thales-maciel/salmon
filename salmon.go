@@ -163,33 +163,35 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablen
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	defer tx.Rollback()
 
-	var exists bool
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`select exists(select 1 from %s where version = $1)`, tablename), migration.Version).Scan(&exists)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to check if migration exists: %w", err)
-	}
-
-	if exists {
-		return nil
-	}
-
-	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`
-        insert into %s (version, description, checksum)
-        values ($1, $2, $3);`, tablename),
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
+        insert or ignore into %s (version, description, checksum)
+        values ($1, $2, $3);`, quoteIdentifier(tablename)),
 		migration.Version, migration.Description, migration.Checksum,
-	); err != nil {
-		tx.Rollback()
+	)
+	if err != nil {
 		return fmt.Errorf("failed to insert migration into history table: %w", err)
 	}
 
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check inserted migration row count: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return nil
+	}
+
 	if _, err = tx.ExecContext(ctx, migration.Content); err != nil {
-		tx.Rollback()
 		return err
 	}
 
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration transaction: %w", err)
+	}
+
+	return nil
 }
 
 func calculateChecksum(content []byte) string {
@@ -224,7 +226,7 @@ func parseMigrationFile(filename string) (int64, string, error) {
 func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
 	migrations := make(Migrations)
 
-	rows, err := db.Query(fmt.Sprintf("select version, description, checksum FROM %s where version > -1 order by version", tableName))
+	rows, err := db.Query(fmt.Sprintf("select version, description, checksum FROM %s where version > -1 order by version", quoteIdentifier(tableName)))
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +254,9 @@ func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
 }
 
 func schema(tableName string) string {
+	quotedTableName := quoteIdentifier(tableName)
+	quotedVersionIndexName := quoteIdentifier(fmt.Sprintf("%s_version_idx", tableName))
+
 	return fmt.Sprintf(`
 		create table if not exists %s (
 		id integer primary key autoincrement,
@@ -260,7 +265,12 @@ func schema(tableName string) string {
 		checksum text not null,
 		applied_at timestamp default current_timestamp not null
 		);
-		`, tableName)
+		create unique index if not exists %s on %s (version);
+		`, quotedTableName, quotedVersionIndexName, quotedTableName)
+}
+
+func quoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
 // osFS wraps functions working with os filesystem to implement fs.FS interfaces.
