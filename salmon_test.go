@@ -96,11 +96,11 @@ func seedAppliedMigration(t *testing.T, db *sql.DB, tableName string, filename s
 	require.NoError(t, err)
 }
 
-func mustBuildMigration(t *testing.T, filename string, content string) Migration {
+func mustBuildMigration(t *testing.T, filename string, content string) migration {
 	version, description, err := parseMigrationFile(filename)
 	require.NoError(t, err)
 
-	return Migration{
+	return migration{
 		Version:     version,
 		Description: description,
 		Checksum:    calculateChecksum([]byte(content)),

@@ -51,9 +51,9 @@ func normalizeOpts(opts *Opts) *Opts {
 	return &normalized
 }
 
-type Migrations map[int64]Migration
+type migrations map[int64]migration
 
-type Migration struct {
+type migration struct {
 	Version     int64
 	Description string
 	Checksum    string
@@ -96,7 +96,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 		return fmt.Errorf("failed to read migration files: %w", err)
 	}
 
-	var migrationsToApply []Migration
+	var migrationsToApply []migration
 	var versions []int64
 	for _, file := range files {
 		version, description, err := parseMigrationFile(file)
@@ -117,7 +117,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 			}
 			continue
 		}
-		migrationsToApply = append(migrationsToApply, Migration{
+		migrationsToApply = append(migrationsToApply, migration{
 			Version:     version,
 			Description: description,
 			Checksum:    checksum,
@@ -160,7 +160,7 @@ func getFileContent(fs fs.FS, file string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablename string) error {
+func applyMigration(ctx context.Context, db *sql.DB, migration migration, tablename string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -230,8 +230,8 @@ func parseMigrationFile(filename string) (int64, string, error) {
 	return version, description, nil
 }
 
-func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
-	migrations := make(Migrations)
+func getAppliedMigrations(db *sql.DB, tableName string) (migrations, error) {
+	migrations := make(migrations)
 
 	rows, err := db.Query(fmt.Sprintf("select version, description, checksum FROM %s where version > -1 order by version", quoteIdentifier(tableName)))
 	if err != nil {
@@ -240,7 +240,7 @@ func getAppliedMigrations(db *sql.DB, tableName string) (Migrations, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var migration Migration
+		var migration migration
 		if err := rows.Scan(&migration.Version, &migration.Description, &migration.Checksum); err != nil {
 			return nil, err
 		}
@@ -280,7 +280,7 @@ func quoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
-func migrationFilename(migration Migration) string {
+func migrationFilename(migration migration) string {
 	if migration.Filename == "" {
 		return fmt.Sprintf("V%d", migration.Version)
 	}
