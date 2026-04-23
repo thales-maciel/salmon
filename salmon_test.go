@@ -3,6 +3,7 @@ package salmon
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,9 @@ import (
 )
 
 type MigrationFiles map[string]string
+
+//go:embed testdata/embedmigrations/*.sql
+var embeddedTestMigrations embed.FS
 
 var (
 	outOfOrder = MigrationFiles{
@@ -104,6 +108,23 @@ func mustBuildMigration(t *testing.T, filename string, content string) Migration
 	}
 }
 
+func appliedVersions(t *testing.T, db *sql.DB, tableName string) []int {
+	rows, err := db.Query(fmt.Sprintf("select version from %s order by version", quoteIdentifier(tableName)))
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var versions []int
+	for rows.Next() {
+		var version int
+		err := rows.Scan(&version)
+		require.NoError(t, err)
+		versions = append(versions, version)
+	}
+	require.NoError(t, rows.Err())
+
+	return versions
+}
+
 func TestMigrate(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -138,7 +159,7 @@ func TestMigrate(t *testing.T) {
 		{
 			name:             "invalid SQL in migration",
 			files:            invalidSql,
-			expectedError:    "incomplete input",
+			expectedError:    "failed to execute migration version 1 (V1__add_email_column.sql): incomplete input",
 			expectedVersions: nil,
 		},
 		{
@@ -176,19 +197,7 @@ func TestMigrate(t *testing.T) {
 			}
 
 			if tt.expectedVersions != nil {
-				rows, err := db.Query(fmt.Sprintf("select version from %s order by version", opts.TableName))
-				require.NoError(t, err)
-				defer rows.Close()
-
-				var versions []int
-				for rows.Next() {
-					var version int
-					err := rows.Scan(&version)
-					require.NoError(t, err)
-					versions = append(versions, version)
-				}
-
-				assert.Equal(t, tt.expectedVersions, versions)
+				assert.Equal(t, tt.expectedVersions, appliedVersions(t, db, opts.TableName))
 			}
 		})
 	}
@@ -208,19 +217,7 @@ func TestMigrateWithPartialOptsUsesDefaults(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rows, err := db.Query("select version from salmon_schema_history order by version")
-	require.NoError(t, err)
-	defer rows.Close()
-
-	var versions []int
-	for rows.Next() {
-		var version int
-		err := rows.Scan(&version)
-		require.NoError(t, err)
-		versions = append(versions, version)
-	}
-
-	assert.Equal(t, []int{0, 1, 2}, versions)
+	assert.Equal(t, []int{0, 1, 2}, appliedVersions(t, db, "salmon_schema_history"))
 }
 
 func TestMigrateRejectsNonContiguousAppliedHistory(t *testing.T) {
@@ -289,4 +286,83 @@ func TestApplyMigrationDoesNotLeakTransactionWhenAlreadyApplied(t *testing.T) {
 	err = db.QueryRowContext(queryCtx, "select count(*) from salmon_schema_history").Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
+}
+
+func TestMigrateIsNoOpWhenMigrationsAlreadyApplied(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	dir := setupMigrationsDir(t, validMigrations)
+	defer os.RemoveAll(dir)
+
+	opts := &Opts{Dir: dir}
+	require.NoError(t, Migrate(ctx, db, opts))
+	require.NoError(t, Migrate(ctx, db, opts))
+
+	assert.Equal(t, []int{0, 1, 2}, appliedVersions(t, db, "salmon_schema_history"))
+}
+
+func TestMigrateRejectsChecksumDriftOnAppliedMigration(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	dir := setupMigrationsDir(t, validMigrations)
+	defer os.RemoveAll(dir)
+
+	opts := &Opts{Dir: dir}
+	require.NoError(t, Migrate(ctx, db, opts))
+
+	modifiedFile := filepath.Join(dir, "V1__add_email_column.sql")
+	err := os.WriteFile(modifiedFile, []byte("alter table users add email text;"), 0644)
+	require.NoError(t, err)
+
+	err = Migrate(ctx, db, opts)
+	require.Error(t, err)
+	assert.Equal(t, fmt.Sprintf("checksum does not match expected value: %s", modifiedFile), err.Error())
+}
+
+func TestMigrateWithEmbeddedFilesystem(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	err := Migrate(ctx, db, &Opts{
+		Dir: "testdata/embedmigrations",
+		FS:  embeddedTestMigrations,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []int{0, 1}, appliedVersions(t, db, "salmon_schema_history"))
+}
+
+func TestMigrateWithCustomTableName(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	dir := setupMigrationsDir(t, validMigrations)
+	defer os.RemoveAll(dir)
+
+	err := Migrate(ctx, db, &Opts{
+		Dir:       dir,
+		TableName: "custom_schema_history",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []int{0, 1, 2}, appliedVersions(t, db, "custom_schema_history"))
+}
+
+func TestMigrateReturnsErrorWhenDirectoryDoesNotExist(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+	defer db.Close()
+
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	err := Migrate(ctx, db, &Opts{
+		Dir: missingDir,
+	})
+	require.Error(t, err)
+	assert.Equal(t, fmt.Sprintf("directory does not exist: %s", missingDir), err.Error())
 }

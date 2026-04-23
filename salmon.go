@@ -58,6 +58,7 @@ type Migration struct {
 	Description string
 	Checksum    string
 	Content     string
+	Filename    string
 }
 
 func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
@@ -121,6 +122,7 @@ func Migrate(ctx context.Context, db *sql.DB, opts *Opts) error {
 			Description: description,
 			Checksum:    checksum,
 			Content:     string(content),
+			Filename:    file,
 		})
 	}
 
@@ -184,7 +186,12 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration, tablen
 	}
 
 	if _, err = tx.ExecContext(ctx, migration.Content); err != nil {
-		return err
+		return fmt.Errorf(
+			"failed to execute migration version %d (%s): %w",
+			migration.Version,
+			migrationFilename(migration),
+			err,
+		)
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -271,6 +278,14 @@ func schema(tableName string) string {
 
 func quoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func migrationFilename(migration Migration) string {
+	if migration.Filename == "" {
+		return fmt.Sprintf("V%d", migration.Version)
+	}
+
+	return filepath.Base(migration.Filename)
 }
 
 // osFS wraps functions working with os filesystem to implement fs.FS interfaces.
